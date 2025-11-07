@@ -361,7 +361,8 @@ impl PrimitiveReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FreeformPatchInput {
     pub cluster_index: usize,
-    pub vertex_indices: Vec<u32>,
+    pub outer_loop: Vec<u32>,
+    pub inner_loops: Vec<Vec<u32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -389,6 +390,8 @@ pub struct FreeformPatchFit {
     pub within_tolerance: bool,
     pub suggested_degree: u32,
     pub suggested_control: (u32, u32),
+    pub outer_loop: Vec<u32>,
+    pub inner_loops: Vec<Vec<u32>>,
 }
 
 pub fn fit_freeform_patches(
@@ -398,13 +401,24 @@ pub fn fit_freeform_patches(
 ) -> Vec<FreeformPatchFit> {
     let mut fits = Vec::with_capacity(patches.len());
     for patch in patches {
-        if patch.vertex_indices.len() < 3 {
+        if patch.outer_loop.len() < 3 {
             continue;
         }
-        let points: Vec<Vector3<f64>> = patch
-            .vertex_indices
-            .iter()
-            .filter_map(|&idx| mesh.vertices.get(idx as usize))
+        let mut indices = HashSet::new();
+        for &idx in &patch.outer_loop {
+            indices.insert(idx);
+        }
+        for loop_vertices in &patch.inner_loops {
+            for &idx in loop_vertices {
+                indices.insert(idx);
+            }
+        }
+        if indices.len() < 3 {
+            continue;
+        }
+        let points: Vec<Vector3<f64>> = indices
+            .into_iter()
+            .filter_map(|idx| mesh.vertices.get(idx as usize))
             .map(|p| Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64))
             .collect();
         if points.len() < 3 {
@@ -444,6 +458,8 @@ pub fn fit_freeform_patches(
             within_tolerance: within,
             suggested_degree: config.max_degree.clamp(1, 5),
             suggested_control: config.max_control,
+            outer_loop: patch.outer_loop.clone(),
+            inner_loops: patch.inner_loops.clone(),
         });
     }
     fits
@@ -965,7 +981,8 @@ mod tests {
         warped_mesh.vertices[3][2] = 0.5; // introduce deviation
         let input = FreeformPatchInput {
             cluster_index: 0,
-            vertex_indices: vec![0, 1, 2, 3],
+            outer_loop: vec![0, 1, 2, 3],
+            inner_loops: vec![],
         };
         let config = FreeformFitConfig {
             surf_tolerance_mm: 0.1,

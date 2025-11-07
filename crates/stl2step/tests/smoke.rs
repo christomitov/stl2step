@@ -26,6 +26,7 @@ fn run_conversion_for(ext: &str) -> Result<(), Box<dyn std::error::Error>> {
     let patches = NamedTempFile::new()?;
     let features = NamedTempFile::new()?;
     let preview = NamedTempFile::new()?;
+    let freeform = NamedTempFile::new()?;
     let working_dir = tempdir()?;
     let config_home = tempdir()?;
     let input_path = working_dir.path().join(format!("part.{ext}"));
@@ -43,6 +44,8 @@ fn run_conversion_for(ext: &str) -> Result<(), Box<dyn std::error::Error>> {
         .arg(features.path().to_str().unwrap())
         .arg("--preview")
         .arg(preview.path().to_str().unwrap())
+        .arg("--freeform")
+        .arg(freeform.path().to_str().unwrap())
         .env(
             "M2B_CONFIG_HOME",
             config_home.path().to_str().expect("path utf8"),
@@ -80,6 +83,8 @@ fn run_conversion_for(ext: &str) -> Result<(), Box<dyn std::error::Error>> {
         preview_json.contains("max_point_error_mm"),
         "preview dump missing deviations for {ext}"
     );
+    let freeform_json = std::fs::read_to_string(freeform.path())?;
+    assert!(freeform_json.contains("rms_error_mm"));
 
     Ok(())
 }

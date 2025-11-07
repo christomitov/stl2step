@@ -17,13 +17,9 @@ fit = { path = "../fit" }
 brep = { path = "../brep" }
 step-writer = { path = "../step-writer" }
 mode-a = { path = "../mode-a" }
-occt-bridge = { path = "../occt-bridge", optional = true }
+occt-bridge = { path = "../occt-bridge" }
 dirs = { workspace = true }
 toml = { workspace = true }
-
-[features]
-default = []
-occt = ["occt-bridge"]
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

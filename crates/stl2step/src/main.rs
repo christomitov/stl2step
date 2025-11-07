@@ -16,6 +16,7 @@ use mesh_io::{load_mesh, LoadedMesh, MeshFormat, Units};
 use mode_a::{
     analyze_planarity, analyze_topology, extract_planar_patches, merge_planar_clusters, PlanarShell,
 };
+use occt_bridge;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use step_writer::{build_metadata, StepMode};
@@ -77,6 +78,12 @@ struct Cli {
     #[arg(long = "preview")]
     preview_path: Option<PathBuf>,
 
+    #[arg(long = "freeform")]
+    freeform_path: Option<PathBuf>,
+
+    #[arg(long = "pro-sew")]
+    pro_sew: bool,
+
     #[arg(long = "telemetry", value_enum, default_value = "auto")]
     telemetry: TelemetryPreference,
 }
@@ -104,6 +111,9 @@ fn run(cli: &Cli) -> Result<JobSummary> {
 
     let cfg = load_user_config();
     let telemetry_opt_in = resolve_telemetry(cli.telemetry, cfg.telemetry_opt_in);
+    if cli.pro_sew {
+        occt_bridge::ensure_enabled()?;
+    }
 
     let LoadedMesh {
         mut mesh,
@@ -148,10 +158,20 @@ fn run(cli: &Cli) -> Result<JobSummary> {
         .iter()
         .map(|patch| FreeformPatchInput {
             cluster_index: patch.cluster_index,
-            vertex_indices: patch.outer_boundary.clone(),
+            outer_loop: patch.outer_boundary.clone(),
+            inner_loops: patch.inner_boundaries.clone(),
         })
         .collect();
     let freeform_report = fit_freeform_patches(&mesh, &freeform_inputs, &freeform_config);
+    let freeform_lookup: HashMap<usize, &FreeformPatchFit> = freeform_report
+        .iter()
+        .map(|fit| (fit.cluster_index, fit))
+        .collect();
+    let planar_error_lookup: HashMap<usize, f32> = planar_shell
+        .patches
+        .iter()
+        .map(|patch| (patch.cluster_index, patch_deviation(&mesh, patch)))
+        .collect();
     let patch_inputs: Vec<_> = planar_shell
         .patches
         .iter()
@@ -160,6 +180,10 @@ fn run(cli: &Cli) -> Result<JobSummary> {
             vertex_loop: patch.outer_boundary.clone(),
             inner_loops: patch.inner_boundaries.clone(),
             normal: patch.normal,
+            max_error_mm: planar_error_lookup.get(&patch.cluster_index).copied(),
+            freeform_error_mm: freeform_lookup
+                .get(&patch.cluster_index)
+                .map(|fit| fit.max_error_mm),
         })
         .collect();
     let topology = analyze_topology(&merged_mesh);
@@ -205,6 +229,9 @@ fn run(cli: &Cli) -> Result<JobSummary> {
     if let Some(path) = &cli.preview_path {
         let preview = build_preview_bundle(&mesh, &planar_shell, cli.mode, &freeform_report);
         write_preview(path, &preview)?;
+    }
+    if let Some(path) = &cli.freeform_path {
+        write_freeform(path, &freeform_report)?;
     }
 
     maybe_store_telemetry(cli.telemetry);
@@ -253,6 +280,12 @@ fn write_features(path: &Path, report: &PrimitiveReport) -> Result<()> {
 fn write_preview(path: &Path, preview: &PreviewBundle) -> Result<()> {
     let file = File::create(path)?;
     serde_json::to_writer_pretty(file, preview)?;
+    Ok(())
+}
+
+fn write_freeform(path: &Path, fits: &[FreeformPatchFit]) -> Result<()> {
+    let file = File::create(path)?;
+    serde_json::to_writer_pretty(file, fits)?;
     Ok(())
 }
 
@@ -543,6 +576,8 @@ mod tests {
         assert!(cli.patches_path.is_none());
         assert!(cli.features_path.is_none());
         assert!(cli.preview_path.is_none());
+        assert!(cli.freeform_path.is_none());
+        assert!(!cli.pro_sew);
         assert_eq!(cli.telemetry, TelemetryPreference::Auto);
         let resolved = resolve_output_path(&cli);
         assert_eq!(
@@ -571,6 +606,8 @@ mod tests {
             patches_path: None,
             features_path: None,
             preview_path: None,
+            freeform_path: None,
+            pro_sew: false,
             telemetry: TelemetryPreference::Auto,
         };
         let summary = run(&cli).expect("stub run succeeds");
@@ -647,10 +684,30 @@ mod tests {
             within_tolerance: true,
             suggested_degree: 3,
             suggested_control: (12, 12),
+            outer_loop: vec![0, 1, 2, 3],
+            inner_loops: Vec::new(),
         }];
         let preview = build_preview_bundle(&mesh, &shell, Mode::Faceted, &freeform);
         assert_eq!(preview.patches.len(), 1);
         assert!(preview.max_point_error_mm <= 1e-6);
+    }
+
+    #[test]
+    fn freeform_dump_succeeds() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let fits = vec![FreeformPatchFit {
+            cluster_index: 0,
+            rms_error_mm: 0.05,
+            max_error_mm: 0.1,
+            within_tolerance: true,
+            suggested_degree: 3,
+            suggested_control: (12, 12),
+            outer_loop: vec![0, 1, 2],
+            inner_loops: vec![],
+        }];
+        write_freeform(temp.path(), &fits).unwrap();
+        let json = fs::read_to_string(temp.path()).unwrap();
+        assert!(json.contains("cluster_index"));
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub struct PlanarPatchInput {
     pub vertex_loop: Vec<u32>,
     pub inner_loops: Vec<Vec<u32>>,
     pub normal: [f32; 3],
+    pub max_error_mm: Option<f32>,
+    pub freeform_error_mm: Option<f32>,
 }
 
 pub fn build_metadata(

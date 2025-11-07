@@ -14,6 +14,7 @@ fn stl_resources_run_cleanly() -> Result<(), Box<dyn std::error::Error>> {
         let report = tempfile::NamedTempFile::new()?;
         let preview = tempfile::NamedTempFile::new()?;
         let features = tempfile::NamedTempFile::new()?;
+        let freeform = tempfile::NamedTempFile::new()?;
         let config_home = tempfile::tempdir()?;
         let mut cmd = cargo_bin_cmd!("stl2step");
         cmd.arg(stl.to_str().unwrap())
@@ -23,6 +24,8 @@ fn stl_resources_run_cleanly() -> Result<(), Box<dyn std::error::Error>> {
             .arg(preview.path().to_str().unwrap())
             .arg("--features")
             .arg(features.path().to_str().unwrap())
+            .arg("--freeform")
+            .arg(freeform.path().to_str().unwrap())
             .env(
                 "M2B_CONFIG_HOME",
                 config_home.path().to_str().expect("path utf8"),
@@ -39,6 +42,8 @@ fn stl_resources_run_cleanly() -> Result<(), Box<dyn std::error::Error>> {
         assert!(preview_json.contains("max_point_error_mm"));
         let feature_json = std::fs::read_to_string(features.path())?;
         assert!(feature_json.contains("primitives"));
+        let freeform_json = std::fs::read_to_string(freeform.path())?;
+        assert!(freeform_json.contains("rms_error_mm"));
     }
     Ok(())
 }
