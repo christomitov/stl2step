@@ -1,0 +1,28 @@
+[package]
+name = "stl2step"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+mesh-io = { path = "../mesh-io" }
+geom-core = { path = "../geom-core" }
+fit = { path = "../fit" }
+brep = { path = "../brep" }
+step-writer = { path = "../step-writer" }
+mode-a = { path = "../mode-a" }
+occt-bridge = { path = "../occt-bridge", optional = true }
+
+[features]
+default = []
+occt = ["occt-bridge"]
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+tempfile = { workspace = true }

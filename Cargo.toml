@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/brep",
+    "crates/stl2step",
+    "crates/fit",
+    "crates/geom-core",
+    "crates/mesh-io",
+    "crates/occt-bridge",
+    "crates/step-writer",
+    "crates/mode-a",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Mesh→B-Rep Team"]
+
+[workspace.dependencies]
+anyhow = "1.0.91"
+clap = { version = "4.5.11", features = ["derive"] }
+serde = { version = "1.0.210", features = ["derive"] }
+thiserror = "1.0.63"
+serde_json = "1.0.128"
+tempfile = "3.13.0"
+assert_cmd = "2.0.16"
+nalgebra = { version = "0.32", default-features = false, features = ["std"] }

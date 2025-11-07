@@ -1,0 +1,12 @@
+[package]
+name = "brep"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+geom-core = { path = "../geom-core" }

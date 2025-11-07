@@ -1,0 +1,13 @@
+[package]
+name = "mode-a"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+mesh-io = { path = "../mesh-io" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+earcutr = "0.5"
