@@ -18,6 +18,8 @@ brep = { path = "../brep" }
 step-writer = { path = "../step-writer" }
 mode-a = { path = "../mode-a" }
 occt-bridge = { path = "../occt-bridge", optional = true }
+dirs = { workspace = true }
+toml = { workspace = true }
 
 [features]
 default = []

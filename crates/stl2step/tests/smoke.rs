@@ -25,7 +25,9 @@ fn run_conversion_for(ext: &str) -> Result<(), Box<dyn std::error::Error>> {
     let report = NamedTempFile::new()?;
     let patches = NamedTempFile::new()?;
     let features = NamedTempFile::new()?;
+    let preview = NamedTempFile::new()?;
     let working_dir = tempdir()?;
+    let config_home = tempdir()?;
     let input_path = working_dir.path().join(format!("part.{ext}"));
     std::fs::copy(asset, &input_path)?;
 
@@ -38,7 +40,13 @@ fn run_conversion_for(ext: &str) -> Result<(), Box<dyn std::error::Error>> {
         .arg("--patches")
         .arg(patches.path().to_str().unwrap())
         .arg("--features")
-        .arg(features.path().to_str().unwrap());
+        .arg(features.path().to_str().unwrap())
+        .arg("--preview")
+        .arg(preview.path().to_str().unwrap())
+        .env(
+            "M2B_CONFIG_HOME",
+            config_home.path().to_str().expect("path utf8"),
+        );
 
     cmd.assert().success();
 
@@ -66,6 +74,11 @@ fn run_conversion_for(ext: &str) -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         features_json.contains("primitives"),
         "features dump missing for {ext}"
+    );
+    let preview_json = std::fs::read_to_string(preview.path())?;
+    assert!(
+        preview_json.contains("max_point_error_mm"),
+        "preview dump missing deviations for {ext}"
     );
 
     Ok(())

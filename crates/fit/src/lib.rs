@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
@@ -301,6 +302,8 @@ pub enum PrimitiveKind {
     Plane,
     Cylinder,
     Sphere,
+    Cone,
+    Torus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -319,6 +322,17 @@ pub enum PrimitiveParams {
     Sphere {
         center: [f32; 3],
         radius: f32,
+    },
+    Cone {
+        apex: [f32; 3],
+        axis_dir: [f32; 3],
+        angle_deg: f32,
+    },
+    Torus {
+        center: [f32; 3],
+        axis_dir: [f32; 3],
+        major_radius: f32,
+        minor_radius: f32,
     },
 }
 
@@ -342,6 +356,99 @@ impl PrimitiveReport {
     }
 }
 
+// --- Freeform fitting (placeholder) -------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FreeformPatchInput {
+    pub cluster_index: usize,
+    pub vertex_indices: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FreeformFitConfig {
+    pub surf_tolerance_mm: f32,
+    pub max_degree: u32,
+    pub max_control: (u32, u32),
+}
+
+impl Default for FreeformFitConfig {
+    fn default() -> Self {
+        Self {
+            surf_tolerance_mm: 0.25,
+            max_degree: 3,
+            max_control: (12, 12),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FreeformPatchFit {
+    pub cluster_index: usize,
+    pub rms_error_mm: f32,
+    pub max_error_mm: f32,
+    pub within_tolerance: bool,
+    pub suggested_degree: u32,
+    pub suggested_control: (u32, u32),
+}
+
+pub fn fit_freeform_patches(
+    mesh: &Mesh,
+    patches: &[FreeformPatchInput],
+    config: &FreeformFitConfig,
+) -> Vec<FreeformPatchFit> {
+    let mut fits = Vec::with_capacity(patches.len());
+    for patch in patches {
+        if patch.vertex_indices.len() < 3 {
+            continue;
+        }
+        let points: Vec<Vector3<f64>> = patch
+            .vertex_indices
+            .iter()
+            .filter_map(|&idx| mesh.vertices.get(idx as usize))
+            .map(|p| Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64))
+            .collect();
+        if points.len() < 3 {
+            continue;
+        }
+        let centroid = points.iter().fold(Vector3::zeros(), |acc, p| acc + p) / points.len() as f64;
+        let mut cov = nalgebra::Matrix3::zeros();
+        for p in &points {
+            let v = p - centroid;
+            cov += v * v.transpose();
+        }
+        let eigen = SymmetricEigen::new(cov);
+        let normal_vec = eigen
+            .eigenvectors
+            .column(smallest_index(&eigen.eigenvalues));
+        let normal = if normal_vec.norm() < 1e-6 {
+            Vector3::new(0.0, 0.0, 1.0)
+        } else {
+            normal_vec.normalize()
+        };
+        let mut sum_sq = 0.0f64;
+        let mut max_err = 0.0f64;
+        for p in &points {
+            let dist = (p - centroid).dot(&normal).abs();
+            sum_sq += dist * dist;
+            if dist > max_err {
+                max_err = dist;
+            }
+        }
+        let rms = (sum_sq / points.len() as f64).sqrt() as f32;
+        let max_err = max_err as f32;
+        let within = rms <= config.surf_tolerance_mm;
+        fits.push(FreeformPatchFit {
+            cluster_index: patch.cluster_index,
+            rms_error_mm: rms,
+            max_error_mm: max_err,
+            within_tolerance: within,
+            suggested_degree: config.max_degree.clamp(1, 5),
+            suggested_control: config.max_control,
+        });
+    }
+    fits
+}
+
 pub fn recognize_primitives(
     mesh: &Mesh,
     segments: &[SegmentInfo],
@@ -358,6 +465,8 @@ pub fn recognize_primitives(
             fit_plane(segment, &points),
             fit_sphere(segment, &points, config),
             fit_cylinder(segment, &points, config),
+            fit_cone(segment, &points, config),
+            fit_torus(segment, &points, config),
         ] {
             if let Some(fit) = candidate {
                 if fit.rms <= config.rms_threshold && fit.inlier_ratio >= config.min_inlier_ratio {
@@ -546,9 +655,171 @@ fn fit_cylinder(
 fn primitive_priority(kind: PrimitiveKind) -> u8 {
     match kind {
         PrimitiveKind::Plane => 0,
-        PrimitiveKind::Cylinder => 1,
-        PrimitiveKind::Sphere => 2,
+        PrimitiveKind::Cone => 1,
+        PrimitiveKind::Cylinder => 2,
+        PrimitiveKind::Sphere => 3,
+        PrimitiveKind::Torus => 4,
     }
+}
+
+fn average_sample(slice: &[(f64, f64)]) -> (f64, f64) {
+    let mut sum_t = 0.0;
+    let mut sum_r = 0.0;
+    for (t, r) in slice {
+        sum_t += *t;
+        sum_r += *r;
+    }
+    let len = slice.len() as f64;
+    (sum_t / len, sum_r / len)
+}
+
+fn fit_cone(
+    segment: &SegmentInfo,
+    points: &[Vector3<f64>],
+    config: &PrimitiveFitConfig,
+) -> Option<PrimitiveFit> {
+    if points.len() < 6 {
+        return None;
+    }
+    let centroid = points.iter().fold(Vector3::zeros(), |acc, p| acc + p) / points.len() as f64;
+    let mut cov = nalgebra::Matrix3::zeros();
+    for p in points {
+        let v = p - centroid;
+        cov += v * v.transpose();
+    }
+    let eigen = SymmetricEigen::new(cov);
+    let idx = largest_index(&eigen.eigenvalues);
+    let axis = eigen.eigenvectors.column(idx);
+    if axis.norm() < 1e-6 {
+        return None;
+    }
+    let axis = axis.normalize();
+    let mut samples = Vec::with_capacity(points.len());
+    let mut min_t = f64::MAX;
+    let mut max_t = f64::MIN;
+    for p in points {
+        let v = p - centroid;
+        let t = v.dot(&axis);
+        let radial = v - axis * t;
+        let r = radial.norm();
+        samples.push((t, r));
+        min_t = min_t.min(t);
+        max_t = max_t.max(t);
+    }
+    let axis_length = (max_t - min_t) as f32;
+    if axis_length < config.min_axis_length {
+        return None;
+    }
+    samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    let bucket = (samples.len() / 5).max(1);
+    let (t_lo, r_lo) = average_sample(&samples[..bucket]);
+    let (t_hi, r_hi) = average_sample(&samples[samples.len() - bucket..]);
+    if (t_hi - t_lo).abs() < 1e-6 {
+        return None;
+    }
+    let slope = (r_hi - r_lo) / (t_hi - t_lo);
+    if slope.abs() < 1e-6 {
+        return None;
+    }
+    let intercept = r_lo - slope * t_lo;
+    let apex_t = -intercept / slope;
+    let apex = centroid + axis * apex_t;
+    let mut sum_sq = 0.0f64;
+    for (t, r) in samples {
+        let pred = slope * t + intercept;
+        if pred <= 1e-6 {
+            return None;
+        }
+        let diff = r - pred;
+        sum_sq += diff * diff;
+    }
+    let rms = (sum_sq / points.len() as f64).sqrt() as f32;
+    let angle_rad = slope.abs().atan();
+    Some(PrimitiveFit {
+        segment_id: segment.id,
+        kind: PrimitiveKind::Cone,
+        rms,
+        inlier_ratio: 1.0,
+        params: PrimitiveParams::Cone {
+            apex: [apex.x as f32, apex.y as f32, apex.z as f32],
+            axis_dir: [axis.x as f32, axis.y as f32, axis.z as f32],
+            angle_deg: angle_rad.to_degrees() as f32,
+        },
+    })
+}
+
+fn fit_torus(
+    segment: &SegmentInfo,
+    points: &[Vector3<f64>],
+    config: &PrimitiveFitConfig,
+) -> Option<PrimitiveFit> {
+    if points.len() < 8 {
+        return None;
+    }
+    let centroid = points.iter().fold(Vector3::zeros(), |acc, p| acc + p) / points.len() as f64;
+    let mut cov = nalgebra::Matrix3::zeros();
+    for p in points {
+        let v = p - centroid;
+        cov += v * v.transpose();
+    }
+    let eigen = SymmetricEigen::new(cov);
+    let idx = smallest_index(&eigen.eigenvalues);
+    let axis = eigen.eigenvectors.column(idx);
+    if axis.norm() < 1e-6 {
+        return None;
+    }
+    let axis = axis.normalize();
+    let mut ring_radii = Vec::with_capacity(points.len());
+    let mut tube_offsets = Vec::with_capacity(points.len());
+    for p in points {
+        let v = p - centroid;
+        let axial = v.dot(&axis);
+        let radial_vec = v - axis * axial;
+        let radial = radial_vec.norm();
+        ring_radii.push(radial);
+        tube_offsets.push(axial);
+    }
+    let major_radius = ring_radii.iter().sum::<f64>() / ring_radii.len() as f64;
+    if major_radius <= 0.0 {
+        return None;
+    }
+    if !(config.min_radius as f64..=config.max_radius as f64).contains(&major_radius) {
+        return None;
+    }
+    let tube_values: Vec<f64> = ring_radii
+        .iter()
+        .zip(tube_offsets.iter())
+        .map(|(radial, axial)| ((radial - major_radius).powi(2) + axial.powi(2)).sqrt())
+        .collect();
+    let minor_radius = tube_values.iter().sum::<f64>() / tube_values.len() as f64;
+    if minor_radius <= 1e-3 || minor_radius > config.max_radius as f64 {
+        return None;
+    }
+    let mut sum_sq = 0.0f64;
+    let mut max_dev = 0.0f64;
+    for &val in &tube_values {
+        let diff = val - minor_radius;
+        sum_sq += diff * diff;
+        if diff.abs() > max_dev {
+            max_dev = diff.abs();
+        }
+    }
+    let rms = (sum_sq / tube_values.len() as f64).sqrt() as f32;
+    if rms > config.rms_threshold {
+        return None;
+    }
+    Some(PrimitiveFit {
+        segment_id: segment.id,
+        kind: PrimitiveKind::Torus,
+        rms,
+        inlier_ratio: 1.0,
+        params: PrimitiveParams::Torus {
+            center: [centroid.x as f32, centroid.y as f32, centroid.z as f32],
+            axis_dir: [axis.x as f32, axis.y as f32, axis.z as f32],
+            major_radius: major_radius as f32,
+            minor_radius: minor_radius as f32,
+        },
+    })
 }
 
 fn smallest_index(values: &Vector3<f64>) -> usize {
@@ -659,6 +930,55 @@ mod tests {
         assert_eq!(report.count_kind(PrimitiveKind::Sphere), 1);
     }
 
+    #[test]
+    fn cone_segment_is_recognized() {
+        let mesh = cone_mesh();
+        let segment = SegmentInfo {
+            id: 0,
+            face_indices: (0..mesh.faces.len()).collect(),
+            average_normal: [0.0, 0.0, 1.0],
+            face_count: mesh.faces.len(),
+        };
+        let mut config = PrimitiveFitConfig::default();
+        config.min_axis_length = 0.5;
+        let report = recognize_primitives(&mesh, &[segment], &config);
+        assert_eq!(report.count_kind(PrimitiveKind::Cone), 1);
+    }
+
+    #[test]
+    fn torus_segment_is_recognized() {
+        let mesh = torus_mesh();
+        let segment = SegmentInfo {
+            id: 0,
+            face_indices: (0..mesh.faces.len()).collect(),
+            average_normal: [0.0, 0.0, 1.0],
+            face_count: mesh.faces.len(),
+        };
+        let report = recognize_primitives(&mesh, &[segment], &PrimitiveFitConfig::default());
+        assert_eq!(report.count_kind(PrimitiveKind::Torus), 1);
+    }
+
+    #[test]
+    fn freeform_patch_reports_errors() {
+        let mesh = plane_mesh();
+        let mut warped_mesh = mesh.clone();
+        warped_mesh.vertices[3][2] = 0.5; // introduce deviation
+        let input = FreeformPatchInput {
+            cluster_index: 0,
+            vertex_indices: vec![0, 1, 2, 3],
+        };
+        let config = FreeformFitConfig {
+            surf_tolerance_mm: 0.1,
+            max_degree: 3,
+            max_control: (12, 12),
+        };
+        let fits = fit_freeform_patches(&warped_mesh, &[input], &config);
+        assert_eq!(fits.len(), 1);
+        let fit = &fits[0];
+        assert!(fit.max_error_mm > 0.1);
+        assert!(!fit.within_tolerance);
+    }
+
     fn cube_mesh() -> Mesh {
         let vertices = vec![
             [-0.5, -0.5, -0.5],
@@ -742,6 +1062,73 @@ mod tests {
             [1, 5, 3],
             [1, 2, 5],
         ];
+        Mesh { vertices, faces }
+    }
+
+    fn cone_mesh() -> Mesh {
+        let segments = 16;
+        let height = 1.0f32;
+        let radius_bottom = 0.8f32;
+        let radius_top = 0.2f32;
+        let mut vertices = Vec::new();
+        for i in 0..segments {
+            let theta = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let cos_t = theta.cos();
+            let sin_t = theta.sin();
+            vertices.push([radius_bottom * cos_t, radius_bottom * sin_t, 0.0]);
+        }
+        for i in 0..segments {
+            let theta = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let cos_t = theta.cos();
+            let sin_t = theta.sin();
+            vertices.push([radius_top * cos_t, radius_top * sin_t, height]);
+        }
+        let mut faces = Vec::new();
+        for i in 0..segments {
+            let next = (i + 1) % segments;
+            let bottom_a = i as u32;
+            let bottom_b = next as u32;
+            let top_a = (i + segments) as u32;
+            let top_b = (next + segments) as u32;
+            faces.push([bottom_a, top_a, top_b]);
+            faces.push([bottom_a, top_b, bottom_b]);
+        }
+        Mesh { vertices, faces }
+    }
+
+    fn torus_mesh() -> Mesh {
+        let major = 1.0f32;
+        let minor = 0.25f32;
+        let rings = 16;
+        let sides = 12;
+        let mut vertices = Vec::new();
+        for i in 0..rings {
+            let theta = (i as f32 / rings as f32) * std::f32::consts::TAU;
+            let cos_theta = theta.cos();
+            let sin_theta = theta.sin();
+            for j in 0..sides {
+                let phi = (j as f32 / sides as f32) * std::f32::consts::TAU;
+                let cos_phi = phi.cos();
+                let sin_phi = phi.sin();
+                let x = (major + minor * cos_phi) * cos_theta;
+                let y = (major + minor * cos_phi) * sin_theta;
+                let z = minor * sin_phi;
+                vertices.push([x, y, z]);
+            }
+        }
+        let mut faces = Vec::new();
+        for i in 0..rings {
+            for j in 0..sides {
+                let next_i = (i + 1) % rings;
+                let next_j = (j + 1) % sides;
+                let a = (i * sides + j) as u32;
+                let b = (i * sides + next_j) as u32;
+                let c = (next_i * sides + next_j) as u32;
+                let d = (next_i * sides + j) as u32;
+                faces.push([a, b, c]);
+                faces.push([a, c, d]);
+            }
+        }
         Mesh { vertices, faces }
     }
 }
